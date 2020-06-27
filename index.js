@@ -1,84 +1,93 @@
-//Environment Configuration
-const AWSConfig = require('./config/aws-config');
-let config = {};
+const getDevicesDynamo = require('./services/getDevicesDynamo');
+const getDevice = require('./services/getDevice');
+const AlexaResponse = require('./services/AlexaResponse');
 
-config.IOT_BROKER_ENDPOINT      = "a3pu13imk5phz6-ats.iot.eu-west-1.amazonaws.com".toLowerCase();
+const log = require('./utilities/log');
+const updateShadow = require('./services/updateShadow');
 
-config.IOT_BROKER_REGION        = "eu-west-1";
+// Lambda Handler
+exports.handler = function (request, context) {
 
-config.IOT_THING_NAME           = "alexa_board";
+  // Dump the request for logging - check the CloudWatch logs
+  console.log("index.handler request  -----");
+  console.log(JSON.stringify(request));
 
-//Loading AWS SDK libraries
+  if (context !== undefined) {
+    console.log("index.handler context  -----");
+    console.log(JSON.stringify(context));
+  }
 
-var AWS = require('aws-sdk');
+  if (request.directive.header.namespace === 'Alexa.Discovery' && request.directive.header.name === 'Discover') {
+    log("DEBUG:", "Discover request",  JSON.stringify(request));
+    handleDiscovery(request, context);
+  } else if (request.directive.header.namespace === 'Alexa.ErrorResponse') {
 
-AWS.config.region = config.IOT_BROKER_REGION;
-AWS.config.accessKeyId = AWSConfig.Key;
-AWS.config.secretAccessKey  = AWSConfig.Secret;
+    //TO DO
 
-//Initializing client for IoT
-
-var iotData = new AWS.IotData({endpoint: config.IOT_BROKER_ENDPOINT});
-
-activatePump();
-
-function activatePump (intent, session, callback) {
-
-  var repromptText = null;
-
-  var sessionAttributes = {};
-
-  var shouldEndSession = true;
-
-  var speechOutput = "";
-
-
-
-
-  //Set the pump to 1 for activation on the device
-
-  var payloadObj={ "state":
-
-      { "desired": {
-          "welcome": "aws-iot",
-          "switch_1": 0,
-          "switch_2": 0,
-          "switch_3": 0,
-          "switch_4": 0,
-          "otajobflag": 0
-        }
+  } else{
+    if(request.directive.header.namespace === 'Alexa.PowerController'){
+      if (request.directive.header.name === 'TurnOn' || request.directive.header.name === 'TurnOff') {
+        log("DEBUG:", "TurnOn or TurnOff Request", JSON.stringify(request));
+        handlePowerControl(request, context);
       }
-
-  };
-
-
-  //Prepare the parameters of the update call
-
-  var paramsUpdate = {
-
-    "thingName" : config.IOT_THING_NAME,
-
-    "payload" : JSON.stringify(payloadObj)
-
-  };
-
-
-  //Update Device Shadow
-
-  iotData.updateThingShadow(paramsUpdate, function(err, data) {
-    console.log('Inside Fun');
-    if (err){
-      console.log(err);
-      //Handle the error here
     }
-    else {
-      speechOutput = "The pump has been activated!";
-      console.log(data);
-      // callback(sessionAttributes,buildSpeechletResponse(intent.name, speechOutput, repromptText, shouldEndSession));
+  }
+};
 
-    }
+async function handleDiscovery(request, context) {
+  let payload = await getDevicesDynamo();
+  console.log('PAYLOAD ', payload);
+  let header = request.directive.header;
+  header.name = "Discover.Response";
+  log("DEBUG" , "Discovery Response: ", JSON.stringify({ header: header, payload: payload }));
+  context.succeed({ event: { header: header, payload: payload } });
+}
 
-  });
+async function handlePowerControl(request, context) {
+  const device = await getDevice(request.directive.endpoint.endpointId);
+  // get device ID passed in during discovery
+  var requestMethod = request.directive.header.name;
+  var responseHeader = request.directive.header;
+  responseHeader.namespace = "Alexa";
+  responseHeader.name = "Response";
+  responseHeader.messageId = responseHeader.messageId + "-R";
+  // get user token pass in request
+  var requestToken = request.directive.endpoint.scope.token;
+  var powerResult;
 
+  // if (requestMethod === "TurnOn") {
+    console.log('DEVICE DETAILS', device);
+    await updateShadow(device, requestMethod);
+  let repromptText = null;
+  let sessionAttributes = {};
+  let shouldEndSession = true;
+  let speechOutput = '';
+  let token = request.directive.endpoint.scope.token;
+    let response = {
+      context: contextResult,
+      event: {
+        header: responseHeader,
+        endpoint: {
+          scope: {
+            type: "BearerToken",
+            token: token
+          },
+          endpointId: config.IOT_THING_NAME
+        },
+        payload: {}
+      }
+    };
 
+    console.log("DEBUG", "Alexa.PowerController ", JSON.stringify(response));
+    context.succeed(response);
+    // Make the call to your device cloud for control
+
+    // powerResult = stubControlFunctionToYourCloud(endpointId, token, request);
+    // powerResult = "ON";
+  // }
+  // else if (requestMethod === "TurnOff") {
+  //   // Make the call to your device cloud for control and check for success
+  //   // powerResult = stubControlFunctionToYourCloud(endpointId, token, request);
+  //   powerResult = "OFF";
+  // }
 }
